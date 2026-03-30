@@ -1,0 +1,770 @@
+---
+title: "Analiza Sklepu Rowerowego"
+author: "Jagoda Chęcińska, Piotr Łukowski, Tomasz Kotliński"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+## Wstęp
+
+W projekcie analizowane są dane klientów sklepu rowerowego, zawierające
+informacje takie jak: status cywilny, płeć, poziom dochodów, liczba
+dzieci, poziom wykształcenia, wykonywany zawód, status posiadania domu,
+liczba samochodów, odległość do miejsca pracy, region zamieszkania oraz
+wiek. Celem pracy jest analiza tych informacji i przeprowadzenie badań
+co wpływa na zakup rowerów.
+
+## Import danych
+
+```{r}
+library(readr)
+sklep_rowerowy <- read.csv("sklep_rowerowy.csv", stringsAsFactors=FALSE, na.strings=c("", "NA"))
+```
+
+```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages(c("naniar", "dplyr","summarytools", "tidyr","car","psych", "ggplot2", "mice", "rpart","ggcorrplot","rpart.plot", "gridExtra", "factoextra", "plyr"))
+install.packages("ggstatsplot")  
+library(ggstatsplot)
+library(readr)
+library(naniar)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggcorrplot)
+library(mice)
+library(rpart)
+library(ggcorrplot)
+library(rpart.plot)
+library(factoextra)
+library(gridExtra)
+library(car)
+library(psych)
+library(summarytools)
+library(readr)
+
+```
+
+### Zawartość danych oraz ich struktura
+
+```{r}
+head(sklep_rowerowy)
+str(sklep_rowerowy)
+```
+
+## Identyfikacja braków danych
+
+W celu oceny kompletności zbioru danych „sklep_rowerowy” przeprowadzono
+analizę brakujących wartości. Wyniki wskazują, że w zestawie danych
+znajduje się 53 brakujących wartości. W zbiorze brakuje 0,4% wartości, w
+kolumnach: Income, Children, Cars, Age, Home Owner,Marital Status,
+Gender. Sprawdzono również rozłożenie braków w kolumnach w wartościach
+procentowych.
+
+```{r}
+
+n_miss(sklep_rowerowy)
+
+vis_miss(sklep_rowerowy) + labs(title = "Braki danych")
+
+miss_var_summary(sklep_rowerowy)  
+
+braki_liczba <- sklep_rowerowy %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%  # Liczba braków w kolumnach
+  pivot_longer(everything(), names_to = "Kolumna", values_to = "Liczba_braków")  
+
+ggplot(braki_liczba, aes(x = Kolumna, y = Liczba_braków)) +  
+  geom_bar(stat = "identity", fill = "steelblue") +  
+  labs(title = "Liczba brakujących danych w kolumnach",
+       x = "Kolumna", y = "Liczba braków") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+braki_procent <- sklep_rowerowy %>%
+  summarise(across(everything(), ~ mean(is.na(.)) * 100)) %>%  
+  pivot_longer(everything(), names_to = "Kolumna", values_to = "Procent")  
+
+ggplot(braki_procent, aes(x = reorder(Kolumna, -Procent), y = Procent)) +  
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Procent brakujących danych w kolumnach",
+       x = "Kolumna", y = "% braków") +
+  theme_minimal()
+
+```
+
+## Przypisywanie zmiennych typu factor
+
+W celu poprawności analiz dokonano konwersji wybranych kolumn na zmienne
+kategoryczne (factor), obejmujących m.in. stan cywilny, płeć,
+wykształcenie, zawód, status własności nieruchomości, dystans do pracy,
+region oraz decyzję o zakupie roweru. Przekształcenie to umożliwia
+poprawne traktowanie danych przez R jako nominalne lub porządkowe, co
+jest istotne dla analiz statystycznych, modeli predykcyjnych oraz
+wizualizacji.
+
+```{r}
+
+sklep_rowerowy <- sklep_rowerowy %>%
+  mutate(
+    `Marital.Status` = na_if(`Marital.Status`, ""),
+    Gender = na_if(Gender, ""),
+    `Home.Owner` = na_if(`Home.Owner`, ""),
+    `Marital.Status` = factor(`Marital.Status`),
+    Gender = factor(Gender),
+    Education = factor(Education),
+    Occupation = factor(Occupation),
+    `Home.Owner` = factor(`Home.Owner`),
+    `Commute.Distance` = factor(`Commute.Distance`),
+    Region = factor(Region),
+    `Purchased.Bike` = factor(`Purchased.Bike`)
+  )
+str(sklep_rowerowy)
+```
+
+## Imputacja Danych
+
+W celu uzupełnienia brakujących wartości w zbiorze "sklep_rowerowy"
+zastosowano średnią adaptacyjną do zmiennych liczbowych oraz metodę
+Predictive Mean Matching (pmm) dla zmiennych kategorycznych. Imputacja
+pozwoliła na eliminację braków danych, co zwiększa kompletność i
+wiarygodność zbioru, umożliwiając dokładniejsze analizy. Dzięki tym
+metodom zachowano strukturę danych, minimalizując wpływ braków na wyniki
+statystyczne i modele predykcyjne. Wizualizacja potwierdza, że po
+imputacji wszystkie kolumny są w pełni uzupełnione (0% braków).
+
+```{r}
+sklep_rowerowy <- sklep_rowerowy %>%
+mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE, trim = 0.1), .)))
+
+imputed_data <- mice(sklep_rowerowy, m = 5, method = 'pmm', seed = 123)
+sklep_rowerowy <- complete(imputed_data)
+
+n_miss(sklep_rowerowy)
+
+vis_miss(sklep_rowerowy) + labs(title = "Braki danych po imputacji")
+```
+
+# Wizualizacje danych
+
+1.  **Rozkład zmiennych liczbowych i kategorycznych** - Przeanalizowano
+    rozkład zmiennych liczbowych oraz kategorycznych w zbiorze
+    "sklep_rowerowy". Histogramy przedstawiają rozkład wartości w
+    zmiennych takich jak wiek (Age), liczba samochodów (Cars), liczba
+    dzieci (Children), dochód (Income), ukazując różnorodność danych i
+    potencjalne odstępstwa. Wykresy kategorii pokazują liczbę obserwacji
+    dla zmiennych takich jak płeć, wykształcenie, region oraz status
+    zakupu roweru.
+
+2.  **Czynniki wpływające na zakup roweru** - Dane wskazują na
+    zróżnicowanie decyzji zakupowych w zależności od regionu, gdzie w
+    Ameryce Północnej zakupów jest najwięcej, a w regionie Pacyfiku
+    najmniej. Istotnym czynnikiem jest także dystans do pracy, gdzie
+    osoby mieszkające bliżej miejsca pracy (0-1 mil) częściej decydują
+    się na zakup roweru.
+
+3.  **Dochód klientów a zakup roweru** - Analiza dochodów pokazuje, że
+    większość klientów ma dochody w przedziale 25 000 - 75 000, przy
+    czym nie ma wyraźnej różnicy w zakupach rowerów w zależności od
+    dochodu. Wykres pudełkowy dochodów w regionach wskazuje, że
+    najwyższe zarobki występują w regionie Pacyfiku, a najniższe w
+    Europie.
+
+4.  **Korelacje między zmiennymi** - Macierz korelacji wykazuje, że
+    najwyższa zależność występuje między liczbą dzieci a wiekiem (0,53)
+    oraz liczbą samochodów a dochodem (0,43). Sugeruje to, że dochód
+    jest kluczowym czynnikiem wpływającym na styl życia klientów
+
+```{r}
+sklep_rowerowy %>%
+select(where(is.numeric)) %>%
+pivot_longer(everything()) %>%
+ggplot(aes(x = value)) +
+geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+facet_wrap(~ name, scales = "free") +
+labs(title = "Rozkład zmiennych liczbowych", x = "Wartość", y = "Częstość") +
+theme_minimal()   
+
+sklep_rowerowy %>%
+select(where(is.factor)) %>%
+pivot_longer(everything()) %>%
+ggplot(aes(x = value)) +
+geom_bar(fill = "steelblue") +
+facet_wrap(~ name, scales = "free") +
+labs(title = "Rozkład zmiennych kategorycznych", x = "Kategorie", y = "Liczba obserwacji") +
+theme_minimal()  
+
+  ggplot(sklep_rowerowy, aes(x = Region, fill = Purchased.Bike)) +
+    geom_bar(position = "dodge") +
+    labs(title = "Zakup rowerów względem regionu",
+         x = "Region",
+         y = "Liczba zakupów",
+         fill = "Zakup roweru (No = 0, Yes = 1)") +
+    theme_minimal()
+  
+ggplot(sklep_rowerowy, aes(x = Commute.Distance, fill = Purchased.Bike)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Zakup rowerów względem przejechanych kilometrów",
+       x = "Dystans dojazdu do pracy",
+       y = "Liczba zakupów",
+       fill = "Zakup roweru (No = 0, Yes = 1)") +
+  theme_minimal()
+
+ggplot(sklep_rowerowy, aes(x = Income, fill = Purchased.Bike)) +
+  geom_histogram(position = "dodge", bins = 30, alpha = 0.7) +
+  labs(title = "Dochód klientów względem zakupu roweru",
+       x = "Dochód",
+       y = "Liczba klientów",
+       fill = "Zakup roweru (No = 0, Yes = 1)") +
+  theme_minimal()
+
+ggplot(sklep_rowerowy, aes(x = Region, y = Income, fill = Region)) +
+  geom_boxplot() +
+  labs(title = "Dochód klientów w różnych regionach",
+       x = "Region",
+       y = "Dochód") +
+  theme_minimal()
+
+cor_matrix <- cor(sklep_rowerowy %>% select(where(is.numeric)), use = "complete.obs")
+ggcorrplot(cor_matrix, hc.order = TRUE, type = "lower", lab = TRUE)
+```
+
+### Model drzewa decyzyjnego
+
+1.  **Budowa modelu** W celu przewidywania zakupu roweru zbudowano model
+    drzewa decyzyjnego, wykorzystując dane treningowe stanowiące 70%
+    zbioru, a pozostałe 30% jako zbiór testowy. Model został wytrenowany
+    na podstawie zmiennych niezależnych, a następnie zwizualizowany, co
+    umożliwia interpretację kluczowych czynników wpływających na zakup
+    roweru.
+
+2.  **Wyniki predykcji Macierz pomyłek** pokazuje, że model poprawnie
+    sklasyfikował 102 przypadki braku zakupu oraz 77 przypadków zakupu,
+    jednak 71 osób, które nie kupiły roweru, zostało błędnie
+    zaklasyfikowanych jako kupujący, a 50 osób, które dokonały zakupu,
+    zostały zaklasyfikowane jako niekupujący.
+
+3.  **Dokładność modelu** Uzyskana dokładność modelu wynosi 59,67%, co
+    sugeruje umiarkowaną skuteczność klasyfikacji. Wynik ten może
+    wskazywać na potrzebę optymalizacji modelu, np. poprzez pruning
+    drzewa, zastosowanie innych metod klasyfikacyjnych lub inżynierię
+    cech w celu zwiększenia jego predykcyjnej wartości.
+
+```{r}
+set.seed(123)
+train_index <- sample(seq_len(nrow(sklep_rowerowy)), size = 0.7 * nrow(sklep_rowerowy))
+train_data <- sklep_rowerowy[train_index, ]
+test_data <- sklep_rowerowy[-train_index, ]
+
+tree_model <- rpart(`Purchased.Bike` ~ ., data = train_data, method = "class")
+tree_model
+
+
+rpart.plot(tree_model, type = 4, extra = 104, fallen.leaves = TRUE, 
+           box.palette = "RdBu", shadow.col = "gray", nn = TRUE )
+          
+tree_predictions <- predict(tree_model, test_data, type = "class")
+
+conf_matrix <- table(Predicted = tree_predictions, Actual = test_data$`Purchased.Bike`)
+conf_matrix
+
+accuracy <- mean(tree_predictions == test_data$`Purchased.Bike`)
+cat("Dokładność modelu drzewa decyzyjnego:", round(accuracy * 100, 2), "%\n")
+```
+
+### Segmentacja klientów (Klasteryzacja K-średnich) dla osób które kupiły rower ze względu na dane numeryczne
+
+**Przeprowadzono segmentację klientów**, którzy kupili rower,
+wykorzystując metodę K-średnich na podstawie numerycznych cech. Dane
+zostały standaryzowane, a optymalną liczbę klastrów określono metodą WSS
+(Elbow Method). Klasteryzacja podzieliła klientów na trzy grupy, co
+wizualizacja przedstawia jako odrębne segmenty. Analiza ta pozwala
+lepiej zrozumieć różnice między kupującymi oraz identyfikować ich
+charakterystyczne cechy, co może być użyteczne w strategiach
+marketingowych i sprzedażowych.
+
+```{r}
+
+bike_buyers <- sklep_rowerowy %>% filter(Purchased.Bike == "Yes")
+
+cluster_data <- bike_buyers %>% select(where(is.numeric))
+cluster_data_scaled <- scale(cluster_data)
+
+fviz_nbclust(cluster_data_scaled, kmeans, method = "wss")
+
+set.seed(123)
+kmeans_model <- kmeans(cluster_data_scaled, centers = 3, nstart = 25)
+
+fviz_cluster(kmeans_model, data = cluster_data_scaled, geom = "point") +
+  labs(title = "Segmentacja klientów - Klasteryzacja K-średnich (Kupujący rowery)")
+
+```
+
+# Statystyki opisowe
+
+### Statystyki dla zmiennych numerycznych
+
+Przeprowadzona analiza statystyczna zbioru danych obejmowała kluczowe
+zmienne numeryczne, takie jak dochód klientów (Income) oraz liczba
+dzieci (Children). W celu charakterystyki rozkładu danych obliczono
+średnią arytmetyczną (mean), medianę (median) oraz odchylenie
+standardowe (sd), które określają przeciętną wartość cechy, jej środkową
+wartość odporną na odstające obserwacje oraz zmienność wyników.
+
+Uzyskane wyniki wskazują, że dla ID średnia wynosi 19 965,99, mediana 19
+744, a odchylenie standardowe 5 347,33, co świadczy o równomiernym
+rozkładzie wartości. Dochód klientów charakteryzuje się średnią 56
+252,09 i medianą 60 000, co sugeruje asymetrię rozkładu i duże
+zróżnicowanie, potwierdzone wysokim odchyleniem standardowym (30
+975,03). Natomiast liczba dzieci wykazuje stabilność – średnia wynosi
+1,91, mediana 2, a niewielkie odchylenie standardowe wskazuje na małą
+zmienność tej cechy.
+
+```{r}
+
+sklep_rowerowy %>% summarise(across(where(is.numeric), list(
+  mean = ~mean(.x, na.rm = TRUE),
+  median = ~median(.x, na.rm = TRUE),
+  sd = ~sd(.x, na.rm = TRUE)
+)))
+```
+
+### Statystyki opisowe dla zmiennych kategorycznych
+
+Analiza zmiennych kategorycznych obejmuje stan cywilny, płeć, poziom
+wykształcenia, rodzaj zatrudnienia, zakup roweru, dystans do pracy oraz
+region zamieszkania. W celu identyfikacji dominujących grup klientów
+utworzono tabele liczebności.
+
+Wyniki wskazują, że żonaci/zamężni (538 osób) i osoby samotne (462)
+występują w zbliżonych proporcjach, podobnie jak kobiety (494) i
+mężczyźni (506). Najwięcej osób posiada wykształcenie licencjackie
+(306), a najliczniejsza grupa zawodowa to pracownicy profesjonalni
+(276).
+
+Większość klientów (684 osoby) zakupiła rower, co może sugerować duże
+zainteresowanie tym środkiem transportu. Najczęściej dojeżdżają do pracy
+w promieniu 1 mili (366 osób). Pod względem regionu, dominującą grupą są
+mieszkańcy Ameryki Północnej (684 osoby), następnie Europy (308) i
+regionu Pacyfiku (192).
+
+Podsumowując, większość klientów mieszka blisko miejsca pracy, ma
+wykształcenie licencjackie, wykonuje zawód profesjonalny i pochodzi z
+Ameryki Północnej. Zdecydowana większość dokonała zakupu roweru, co może
+wskazywać na dużą popularność tego środka transportu wśród badanej
+grupy.
+
+```{r}
+table(sklep_rowerowy$Marital.Status)
+table(sklep_rowerowy$Gender)
+table(sklep_rowerowy$Education)
+table(sklep_rowerowy$Occupation)
+table(sklep_rowerowy$Home.Owner)
+table(sklep_rowerowy$Commute.Distance)
+table(sklep_rowerowy$Region)
+```
+
+## Podsumowanie statystyk opisowych
+
+1.  Kluczowe statystyki opisowe: Analiza zmiennych numerycznych wskazuje
+    na istotne różnice w dochodach klientów. Średni dochód wynosi 56
+    252,1, jednak duża rozpiętość wartości (od 10 000 do 170 000) oraz
+    wysokie odchylenie standardowe sugerują istotne różnice dochodowe
+    wśród badanej grupy. Tego rodzaju zróżnicowanie może wskazywać na
+    różne grupy klientów o odmiennym statusie ekonomicznym, co może mieć
+    wpływ na ich decyzje zakupowe. Pod względem wieku średnia wynosi
+    44,2, a mediana 43 lata, co oznacza, że większość klientów znajduje
+    się w wieku średnim. Wiek minimalny wynosi 25 lat, a maksymalny 89
+    lat, co sugeruje stosunkowo szeroką rozpiętość wieku w analizowanej
+    grupie. Może to oznaczać, że oferta sklepu rowerowego jest
+    atrakcyjna dla osób z różnych grup wiekowych. Średnia liczba dzieci
+    wynosi 1,9, przy wartościach od 0 do 5, co sugeruje, że większość
+    klientów ma jedno lub dwoje dzieci, a większe rodziny stanowią
+    mniejszy odsetek. Liczba posiadanych samochodów wynosi średnio 1,5,
+    co wskazuje, że większość badanej populacji posiada od jednego do
+    dwóch pojazdów, co może mieć wpływ na wybór środków transportu i
+    preferencje dotyczące mobilności.
+
+2.  Struktura demograficzna i społeczna: Analiza struktury populacji pod
+    względem płci pokazuje, że kobiety i mężczyźni są niemal
+    równomiernie reprezentowani (49,4% vs. 50,6%), co oznacza, że nie ma
+    dominującej grupy pod względem płci wśród klientów. W kontekście
+    stanu cywilnego 53,8% osób pozostaje w związku małżeńskim, a 46,2%
+    to osoby samotne, co może sugerować, że zarówno osoby żyjące w
+    rodzinach, jak i osoby nieposiadające partnerów są zainteresowane
+    zakupem roweru w podobnym stopniu. Największa część klientów posiada
+    wykształcenie licencjackie (30,6%), co oznacza, że większość z nich
+    ukończyła studia wyższe pierwszego stopnia. Stosunkowo duży odsetek
+    klientów ma również częściowe wykształcenie wyższe (26,5%) lub
+    studia magisterskie (17,4%), podczas gdy najmniejsza grupa posiada
+    tylko wykształcenie średnie (7,6%). Może to sugerować, że oferta
+    sklepu rowerowego trafia głównie do osób z wyższym poziomem
+    edukacji. Dodatkowo, 68,4% klientów posiada własną nieruchomość, co
+    sugeruje ich stabilną sytuację finansową. Właściciele nieruchomości
+    mogą mieć większą skłonność do inwestycji w produkty rekreacyjne,
+    takie jak rowery, co może być istotnym czynnikiem wpływającym na ich
+    decyzje zakupowe.
+
+3.  Charakterystyka transportu i lokalizacji:Analiza dystansu do pracy
+    wskazuje, że najwięcej osób dojeżdża do pracy w promieniu 0-1 mili
+    (36,6%), co oznacza, że większość klientów mieszka stosunkowo blisko
+    swojego miejsca zatrudnienia. Może to wpływać na popularność rowerów
+    jako środka transportu, ponieważ krótkie dystanse sprzyjają ich
+    wykorzystaniu. Z kolei najrzadziej spotykany dystans to ponad 10 mil
+    (11,1%), co oznacza, że tylko niewielka grupa klientów musi
+    pokonywać duże odległości codziennie. Pod względem regionu
+    zamieszkania 50,8% klientów pochodzi z Ameryki Północnej, 30% z
+    Europy, a 19,2% z regionu Pacyfiku. Może to sugerować, że klienci z
+    Ameryki Północnej dominują w analizowanym zbiorze, co może mieć
+    wpływ na wzorce zakupowe i preferencje dotyczące transportu.
+
+4.  Decyzja o zakupie roweru: Wyniki analizy pokazują, że 51,9% klientów
+    nie kupiło roweru, natomiast 48,1% zdecydowało się na jego zakup.
+    Sugeruje to, że niemal połowa populacji dostrzega wartość roweru
+    jako środka transportu lub narzędzia rekreacyjnego. Wnioski
+    wskazują, że dochody klientów oraz odległość do pracy mogą mieć
+    wpływ na ich decyzję zakupową – osoby o wyższych dochodach oraz te,
+    które mieszkają bliżej miejsca pracy, częściej wybierają rower.
+    Dodatkowo, status własności nieruchomości i liczba posiadanych
+    samochodów również mogą wpływać na zakup roweru. Osoby posiadające
+    więcej niż jeden samochód mogą być mniej skłonne do zakupu roweru
+    jako alternatywnego środka transportu. Natomiast region zamieszkania
+    wydaje się mieć mniejsze znaczenie dla decyzji o zakupie roweru, co
+    sugeruje, że motywacje klientów są bardziej związane z
+    indywidualnymi czynnikami ekonomicznymi i stylu życia niż z ich
+    lokalizacją geograficzną.
+
+5.  Podsumowując, analiza wykazała, że klienci sklepu rowerowego to
+    przede wszystkim osoby w średnim wieku, z wyższym wykształceniem,
+    stabilnym zatrudnieniem i relatywnie wysokimi dochodami. W
+    większości posiadają oni własne nieruchomości i samochody, jednak
+    znaczna część z nich mieszka blisko miejsca pracy, co sprzyja
+    wykorzystywaniu rowerów jako środka transportu. Decyzja o zakupie
+    roweru zależy głównie od poziomu dochodów oraz dystansu do pracy,
+    natomiast region zamieszkania nie wydaje się istotnym czynnikiem.
+
+```{r, results='asis'}
+library(summarytools)
+dfSummary(sklep_rowerowy) %>% print(method = "render", style = "grid")
+```
+
+# Przekroje
+
+Przeprowadzona analiza przekrojowa ujawnia istotne zależności między
+dochodem, wiekiem, dystansem do pracy, regionem zamieszkania i decyzją o
+zakupie roweru. Osoby, które zdecydowały się na zakup roweru, miały
+wyższy średni dochód (57 738,22) niż osoby, które nie kupiły roweru (54
+874,76). Różnice te sugerują, że rower może być traktowany zarówno jako
+środek transportu, jak i produkt rekreacyjny przez klientów o wyższych
+dochodach. Widać również, że młodsze osoby częściej kupują rowery –
+średni wiek kupujących wynosi 42,93, natomiast niekupujących 45,33, co
+może wskazywać na większe zainteresowanie rowerami w młodszych grupach
+wiekowych.
+
+Analiza dystansu do pracy wykazała, że osoby o wyższych dochodach
+częściej dojeżdżają na dłuższe dystanse – średni dochód rośnie wraz z
+odległością, osiągając najwyższy poziom 74 864,86 dla osób
+dojeżdżających 12,5 mili. Może to wynikać z faktu, że lepiej płatne
+miejsca pracy znajdują się dalej od obszarów zamieszkania.
+
+Podział według regionów ujawnił wyraźne różnice w poziomie dochodów. W
+Europie średni dochód osób dojeżdżających na dłuższe dystanse jest ponad
+trzykrotnie wyższy niż u tych mieszkających blisko pracy, natomiast w
+Ameryce Północnej i regionie Pacyfiku różnice te są mniej wyraźne.
+Wskazuje to, że w Europie odległość do pracy może być silniej
+skorelowana z poziomem dochodów niż w innych regionach.
+
+Analiza decyzji o zakupie roweru w różnych regionach wykazała, że osoby,
+które kupiły rower, miały wyższy średni dochód we wszystkich regionach.
+W Ameryce Północnej kupujący zarabiali średnio 65 062,19, podczas gdy
+niekupujący 60 902,78. Podobne zależności zaobserwowano w Europie i
+regionie Pacyfiku.
+
+```{r}
+
+przekroj_Purchased_Income_Age <- sklep_rowerowy %>%
+  group_by(Purchased.Bike) %>%
+  summarise(Count = n(), Avg_Income = mean(Income, na.rm = TRUE), Avg_Age = mean(Age, na.rm = TRUE))
+przekroj_Purchased_Income_Age
+
+
+przekroj_Distance_Income_Cars <- sklep_rowerowy %>%
+  group_by(Commute.Distance) %>%
+  summarise(Count = n(), Avg_Income = mean(Income, na.rm = TRUE), Avg_Age = mean(Cars, na.rm = TRUE))
+przekroj_Distance_Income_Cars
+
+przekroj_Income_Age_Children <- sklep_rowerowy %>%
+  pivot_longer(cols = c(Income, Age, Children,Cars), names_to = "Variable", values_to = "Value") %>%
+  group_by(Variable) %>%
+  summarise(Avg_Value = mean(Value, na.rm = TRUE), Count = n())
+przekroj_Income_Age_Children
+
+
+
+przekroj_region_Distance_dochod <- sklep_rowerowy %>%
+  group_by(Region, `Commute.Distance`) %>%
+  summarise(Count = n(), Avg_Income = mean(Income, na.rm = TRUE))
+
+przekroj_region_Distance_dochod
+
+przekroj_region_purchased_income <- sklep_rowerowy %>%
+  group_by(Region,`Purchased.Bike`) %>%
+  summarise(Count = n(), Avg_Income = mean(Income, na.rm = TRUE))
+przekroj_region_purchased_income
+```
+
+# Wnioskowanie statystyczne
+
+### Model regresji logistycznej
+
+1.  Czynniki istotnie wpływające na decyzję o zakupie roweru Stan
+    cywilny (Marital.StatusSingle, p = 0.00904) – osoby samotne wykazują
+    wyższe prawdopodobieństwo zakupu roweru niż osoby w związku
+    małżeńskim (współczynnik = 0.4755, istotność na poziomie 0.01). Może
+    to wynikać z większej mobilności oraz mniejszej liczby zobowiązań
+    rodzinnych. Liczba dzieci (Children, p = 0.03568) – każda dodatkowa
+    osoba na utrzymaniu zmniejsza szanse zakupu roweru (współczynnik =
+    -0.1342, istotność na poziomie 0.05). Rodziny z dziećmi mogą
+    częściej korzystać z samochodów lub innych środków transportu, co
+    wpływa na ich decyzję.
+
+    Poziom wykształcenia (EducationPartial College, p = 0.02652) – osoby
+    z częściowym wykształceniem wyższym rzadziej kupują rowery
+    (współczynnik = -0.5856). Może to wynikać z różnych nawyków
+    transportowych tej grupy lub specyfiki ich sytuacji zawodowej.
+
+    Posiadanie nieruchomości (Home.OwnerYes, p = 0.01264) – osoby
+    posiadające dom rzadziej decydują się na zakup roweru (współczynnik
+    = 0.5083, istotność na poziomie 0.05), co może sugerować, że
+    stabilna sytuacja mieszkaniowa wiąże się z innymi środkami
+    transportu, takimi jak samochód.
+
+    Liczba samochodów (Cars, p = 0.00555) – każdy dodatkowy samochód
+    zmniejsza prawdopodobieństwo zakupu roweru (współczynnik = -0.3000,
+    istotność na poziomie 0.01). Oznacza to, że osoby posiadające wiele
+    pojazdów nie widzą potrzeby zakupu roweru jako środka transportu.
+
+    Odległość do pracy (Commute.Distance10+ Miles, p = 0.01997) – osoby
+    dojeżdżające na duże odległości rzadziej kupują rower (współczynnik
+    = -1.091, istotność na poziomie 0.01), co sugeruje, że rower jest
+    mniej praktyczny dla długodystansowych dojazdów. Region zamieszkania
+    
+    (RegionPacific, p = 0.00999) – mieszkańcy regionu Pacyfiku częściej
+    kupują rowery (współczynnik = 0.7637). Może to wynikać z większej
+    dostępności infrastruktury rowerowej, klimatu sprzyjającego jeździe
+    na rowerze lub polityki proekologicznej regionu.
+
+2.  Zmienne o nieistotnym wpływie na decyzję o zakupie roweru Kilka
+    zmiennych nie wykazało istotnego wpływu na decyzję zakupową:
+
+    Płeć (GenderMale, p = 0.86498) – brak istotnego wpływu płci na zakup
+    roweru sugeruje, że preferencje transportowe są podobne wśród mężczyzn i
+    kobiet. 
+    
+    Dochód (Income, p = 0.07602) – wartość znajduje się na granicy
+    istotności, co sugeruje pewien wpływ dochodów na decyzję zakupową, choć
+    nie jest on jednoznacznie potwierdzony. 
+    
+    Poziom wykształcenia (EducationGraduate Degree, EducationHigh School) – brak znaczącego
+    wpływu sugeruje, że posiadanie wykształcenia wyższego lub średniego nie
+    różnicuje wyraźnie skłonności do zakupu roweru. 
+    
+    Rodzaj zatrudnienia (Occupation) – analiza nie wykazała istotnych różnic w skłonności do
+    zakupu roweru w zależności od wykonywanego zawodu. 
+    
+    Odległość do pracy dla krótszych dystansów (Commute.Distance1-2 Miles, 2-5 Miles, 5-10
+    Miles) – różnice w krótszych odległościach nie były istotne
+    statystycznie, co może oznaczać, że w tych przypadkach wybór roweru jest
+    determinowany innymi czynnikami niż sama odległość. 
+
+3.  Wnioski i interpretacja wyników Wyniki modelu regresji logistycznej pozwalają na sformułowanie kilku kluczowych        wniosków:
+
+    Najważniejsze determinanty zakupu roweru to stan cywilny, liczba dzieci,
+    liczba samochodów, odległość do pracy oraz region zamieszkania. 
+    
+    Osoby samotne, mieszkańcy regionu Pacyfiku oraz osoby dojeżdżające krótsze
+    dystanse są bardziej skłonne do zakupu roweru, co sugeruje, że może on
+    pełnić funkcję zarówno rekreacyjną, jak i użytkową. 
+    
+    Posiadanie dzieci,własnego domu oraz większej liczby samochodów zmniejsza
+    prawdopodobieństwo zakupu roweru, co sugeruje, że osoby w
+    ustabilizowanej sytuacji rodzinnej i mające inne środki transportu
+    rzadziej decydują się na rower. 
+    Płeć oraz poziom wykształcenia nie mają istotnego wpływu na decyzję o zakupie roweru, 
+    co oznacza, że preferencje zakupowe w tym zakresie są niezależne od tych cech demograficznych.
+
+```{r}
+model <- glm(`Purchased.Bike` ~ ., data = train_data, family = binomial)
+summary(model)
+```
+
+### Test Shapiro-Wilka dla dochodu a zakupu roweru
+
+Pomaga określić, czy stosować testy parametryczne czy nieparametryczne.
+Hipotezy testowe: H₀ (hipoteza zerowa): Dane mają rozkład normalny. H₁
+(hipoteza alternatywna): Dane nie mają rozkładu normalnego.
+
+```{r}
+by(sklep_rowerowy$Income, sklep_rowerowy$`Purchased.Bike`, shapiro.test)
+```
+
+Przy poziomie istotności 95% bardzo niskie wartości p-value (\< 0.05)
+oznaczają, że istnieją statystyczne przesłanki do odrzucenia hipotezy
+zerowej na rzecz hipotezy alternatywnej, co wskazuje, że dane nie mają
+rozkładu normalnego.Należy zastosować testy nieprarametryczne.
+
+### Chi2 dla region a zakup roweru
+
+Test chi-kwadrat dla zakupu roweru i regionu (p = 0.001032) wykazał
+istotną zależność, co oznacza, że miejsce zamieszkania wpływa na decyzję
+o zakupie. Niektóre regiony wykazują większą skłonność do kupowania
+rowerów niż inne
+
+```{r}
+chi_Region <- chisq.test(table(sklep_rowerowy$`Purchased.Bike`, sklep_rowerowy$Region))
+print(chi_Region)
+```
+
+### Chi2 dla dystans do pracy a zakup roweru
+
+Testy chi-kwadrat wykazały istotne zależności między zakupem roweru a
+regionem (p = 0.001032) oraz dystansem dojazdu (p = 5.852e-07). Oznacza
+to, że miejsce zamieszkania i odległość do pracy wpływają na decyzję o
+zakupie roweru – osoby mieszkające bliżej pracy częściej go wybierają.
+
+```{r}
+chi_Distance <- chisq.test(table(sklep_rowerowy$`Purchased.Bike`, sklep_rowerowy$Commute.Distance))
+print(chi_Distance)
+```
+
+### Test Kruskala-Wallisa dla zakupu roweru a dochodu
+
+```{r}
+kruskal_test_income_purchasedbike <- kruskal.test(Income ~ `Purchased.Bike`, data = sklep_rowerowy)
+kruskal_test_income_purchasedbike
+```
+
+### Powiązanie testów z analizą klientów
+
+Test Shapiro-Wilka: Wyniki testu wykazały, że dochód nie ma rozkładu
+normalnego zarówno w grupie kupujących, jak i niekupujących roweru (p \<
+0,05). Wskazuje to, że w dalszej analizie należy stosować testy
+nieparametryczne (np. Kruskala-Wallisa) zamiast testów parametrycznych
+(np. ANOVA).
+
+Test Kruskala-Wallisa: Wynik testu (p = 0.1274) wskazuje, że dochód nie
+różni się istotnie między osobami, które kupiły rower, a tymi, które go
+nie kupiły. Oznacza to, że dochód nie jest kluczowym czynnikiem
+decyzyjnym przy zakupie roweru – inne aspekty, takie jak region
+zamieszkania, dystans do pracy czy styl życia, mogą mieć większe
+znaczenie.
+
+### Test Kruskala- Wallisa dla zakupu roweru a regionu
+
+```{r}
+kruskal_test_Region_purchasedbike <- kruskal.test(Region ~ `Purchased.Bike`, data = sklep_rowerowy)
+kruskal_test_Region_purchasedbike
+```
+
+### Test Kruskala - Wallisa dla zakupu roweru a dystans do pracy
+
+```{r}
+kruskal_test_Commute_Distance_purchasedbike <- kruskal.test(`Commute.Distance` ~ `Purchased.Bike`, data = sklep_rowerowy)
+print(kruskal_test_Commute_Distance_purchasedbike)
+```
+
+### Analiza wyniku testu Kruskala-Wallisa dla dystansu do pracy a zakupu roweru
+
+Przeprowadzony test Kruskala-Wallisa wykazał istotne statystycznie
+różnice w dystansie do pracy między osobami, które kupiły rower, a tymi,
+które go nie kupiły (p = 0.0067). Oznacza to, że dystans do pracy jest
+kluczowym czynnikiem wpływającym na decyzję zakupową, co potwierdzają
+wcześniejsze wizualizacje. Wynik sugeruje, że osoby pokonujące określone
+odległości częściej decydują się na zakup roweru, dlatego warto skupić
+się na segmentacji klientów według dystansu i dostosowaniu strategii
+marketingowych do tej grupy.
+
+## Wizualizacja testów
+1.  Wpływ wieku na zakup roweru
+      Model regresji oraz test Manna-Whitneya (p = 0.00375) wskazują, że wiek ma istotny wpływ na decyzję zakupową.          Mediana wieku osób kupujących rower wynosi 41 lat, natomiast dla osób, które nie dokonały zakupu, wynosi 44 lata.
+      Analiza wykazała, że młodsze osoby częściej decydują się na zakup roweru, co może wynikać z ich większej                aktywności fizycznej oraz większej elastyczności w zakresie wyboru środków transportu. Wartość współczynnika r_s       (0.11) sugeruje, że korelacja jest niewielka, ale istotna statystycznie.
+      Wyniki regresji logistycznej potwierdzają brak istotnego wpływu wieku na decyzję zakupową (p = 0.95109), co            oznacza, że mimo widocznej różnicy w medianie, nie jest to dominujący czynnik wpływający na zakup.
+
+2.  Dochód a decyzja o zakupie roweru
+      Zarówno regresja logistyczna (p = 0.07602), jak i test Manna-Whitneya (p = 0.13) wskazują, że dochód nie jest          istotnym czynnikiem decydującym o zakupie roweru.Wykresy pokazują, że mediana dochodu w obu grupach wynosi 60          000, co oznacza, że osoby o różnych poziomach zarobków podejmują decyzję o zakupie roweru w podobny sposób.            Wartość r_s (-0.05) potwierdza brak istotnej korelacji.
+      Wyniki te sugerują, że decyzja o zakupie roweru jest niezależna od poziomu dochodów i może być bardziej związana       z czynnikami stylu życia, dostępnością infrastruktury rowerowej lub preferencjami transportowymi.
+
+3.  Dystans do pracy jako kluczowy czynnik zakupu roweru
+      Zarówno wyniki regresji, jak i analiza graficzna wskazują, że dystans do pracy jest jednym z najważniejszych           czynników wpływających na zakup roweru. Test Manna-Whitneya (p = 1.26e-05) oraz regresja logistyczna (p = 0.01997       dla dystansu powyżej 10 mil) potwierdzają, że osoby mieszkające bliżej miejsca pracy częściej wybierają rower          jako środek transportu.
+      Mediana dystansu do pracy w grupie kupujących wynosi 1.5 mili, podczas gdy dla osób, które nie kupiły roweru,          wynosi 3.5 mili. Wartość r_s (0.15) sugeruje umiarkowaną, ale istotną korelację.
+      Wyniki regresji wskazują również, że osoby dojeżdżające ponad 10 mil do pracy są znacznie mniej skłonne do zakupu       roweru (współczynnik = -1.091). Rower jako środek transportu staje się więc mniej praktyczny na dłuższych              dystansach, co ogranicza jego popularność wśród osób o długich codziennych dojazdach.
+
+
+```{r}
+ggbetweenstats( data = sklep_rowerowy, x = Purchased.Bike,
+y = Age,
+type = "nonparametric",
+title = "Wiek a decyzja o zakupie roweru", xlab = "Zakup roweru", ylab = "Wiek", )
+
+ggbetweenstats( data = sklep_rowerowy, x = Purchased.Bike,
+y = Income,
+type = "nonparametric",
+title = "Dochód a decyzja o zakupie roweru", xlab = "Zakup roweru", ylab = "Dochód", )
+
+sklep_rowerowy <- sklep_rowerowy %>%
+  mutate(Commute.Distance = case_when(
+    Commute.Distance == "0-1 Miles" ~ 0.5,
+    Commute.Distance == "1-2 Miles" ~ 1.5,
+    Commute.Distance == "2-5 Miles" ~ 3.5,
+    Commute.Distance == "5-10 Miles" ~ 7.5,
+    Commute.Distance == "10+ Miles" ~ 12.5,
+    TRUE ~ NA_real_
+  ))
+
+ggbetweenstats( data = sklep_rowerowy, x = Purchased.Bike,
+y = Commute.Distance,
+type = "nonparametric",
+title = "Dystans do pracy a decyzja o zakupie roweru", xlab = "Zakup roweru", ylab = "Dystans do pracy", )
+
+
+```
+
+# Podsumowanie
+
+Przeprowadzona analiza pozwoliła na szczegółowe zbadanie czynników wpływających na decyzję klientów o zakupie roweru, uwzględniając zarówno cechy demograficzne, ekonomiczne, jak i behawioralne. Dzięki kompleksowej obróbce danych, ich wizualizacji, analizie opisowej oraz modelowaniu statystycznemu możliwe było określenie, które zmienne odgrywają kluczową rolę w podejmowaniu decyzji zakupowych oraz jakie relacje występują między nimi.
+
+Jednym z najważniejszych ustaleń było to, że dystans do pracy ma decydujący wpływ na zakup roweru – osoby mieszkające bliżej miejsca zatrudnienia częściej decydują się na jego zakup. Wynika to z faktu, że krótsze dystanse sprzyjają wykorzystywaniu roweru jako codziennego środka transportu, natomiast osoby dojeżdżające na większe odległości częściej korzystają z samochodów lub transportu publicznego. Analiza regresji logistycznej oraz test Kruskala-Wallisa jednoznacznie potwierdziły, że osoby dojeżdżające ponad 10 mil do pracy rzadziej kupują rower, co wynika z jego ograniczonej praktyczności na długich dystansach.
+
+Istotną zależność zaobserwowano również w odniesieniu do wieku – osoby młodsze częściej decydują się na zakup roweru niż osoby starsze. Może to wynikać z większej aktywności fizycznej oraz elastyczności młodszych klientów w wyborze środków transportu. Jednak, mimo istotnej różnicy w medianie wieku kupujących i niekupujących, wyniki regresji wskazują, że wiek sam w sobie nie jest kluczowym czynnikiem determinującym decyzję o zakupie, lecz jest skorelowany z innymi czynnikami, takimi jak styl życia i potrzeby transportowe.
+
+Dochód, który początkowo mógł wydawać się istotnym czynnikiem determinującym zakup roweru, ostatecznie nie wykazał silnego wpływu na decyzję zakupową. Test Manna-Whitneya wykazał brak istotnych różnic w medianach dochodu między kupującymi i niekupującymi rower, co sugeruje, że rower nie jest produktem ekskluzywnym ani ograniczonym do osób o określonym statusie finansowym. Niemniej jednak, dochód może pośrednio wpływać na decyzję zakupową poprzez inne czynniki, takie jak liczba posiadanych samochodów – osoby z wyższymi dochodami częściej posiadają więcej pojazdów, co zmniejsza ich skłonność do wyboru roweru jako głównego środka transportu.
+
+Liczba posiadanych samochodów oraz liczba dzieci również okazały się istotnymi czynnikami wpływającymi na decyzję zakupową. Każdy dodatkowy samochód w gospodarstwie domowym zmniejszał prawdopodobieństwo zakupu roweru, co wynika z faktu, że osoby posiadające więcej pojazdów są mniej zależne od alternatywnych środków transportu. Podobnie, każda dodatkowa osoba na utrzymaniu obniżała szansę na zakup roweru, co może być związane z koniecznością wyboru bardziej praktycznych środków transportu dla rodziny.
+
+Analiza wykazała również znaczącą zależność między miejscem zamieszkania a skłonnością do zakupu roweru. Mieszkańcy regionu Pacyfiku częściej kupowali rowery w porównaniu do klientów z Europy czy Ameryki Północnej, co może wynikać z lepszej infrastruktury rowerowej, polityki ekologicznej lub preferencji kulturowych związanych z aktywnym stylem życia. Testy chi-kwadrat potwierdziły istotność tej zależności, co sugeruje, że region zamieszkania powinien być brany pod uwagę w strategii marketingowej sklepu rowerowego.
+
+Podsumowując, analiza wykazała, że decyzja o zakupie roweru jest wynikiem wzajemnych relacji między wieloma czynnikami. Dystans do pracy bezpośrednio wpływa na wybór roweru jako środka transportu, podczas gdy dochód, choć nie jest czynnikiem kluczowym, może pośrednio oddziaływać na decyzję poprzez liczbę posiadanych samochodów. Wiek klientów koreluje z ich preferencjami transportowymi, ale nie jest samodzielnym czynnikiem determinującym zakup. Natomiast region zamieszkania odgrywa znaczącą rolę w decyzjach zakupowych, co sugeruje konieczność dostosowania działań marketingowych do specyfiki poszczególnych rynków. Wnioski te mogą być wykorzystane do optymalizacji strategii sprzedażowej sklepu rowerowego poprzez precyzyjne targetowanie klientów, uwzględniające ich miejsce zamieszkania, odległość do pracy oraz sytuację ekonomiczną.
+
+Przeprowadzona analiza pozwoliła na dogłębną ocenę czynników wpływających na decyzję o zakupie roweru, obejmując aspekty demograficzne, ekonomiczne i behawioralne klientów sklepu rowerowego. W ramach badania przeprowadzono kompleksowe przygotowanie danych, wizualizację, analizę opisową oraz wnioskowanie statystyczne, co umożliwiło określenie kluczowych zależności i zależności przyczynowo-skutkowych między zmiennymi.
+
+Na etapie przygotowania danych dokonano ich czyszczenia, imputacji brakujących wartości oraz konwersji zmiennych na odpowiednie formaty. Dzięki temu możliwe było rzetelne przeprowadzenie dalszych analiz bez wpływu brakujących danych na uzyskane wyniki. Standaryzacja zmiennych liczbowych oraz przypisanie wartości kategorycznych do odpowiednich grup pozwoliły na dokładniejsze analizy statystyczne i modelowanie predykcyjne. Wizualizacja danych umożliwiła ocenę rozkładu zmiennych oraz wykrycie potencjalnych zależności, które mogły mieć wpływ na decyzję klientów dotyczącą zakupu roweru.
+
+Analiza opisowa wykazała, że dochód klientów jest silnie zróżnicowany, jednak nie przekłada się wprost na decyzję o zakupie roweru. Średni dochód wynosi 56 252,1, lecz duża zmienność wartości wskazuje na występowanie różnych grup dochodowych wśród klientów. Jednocześnie wyniki testów statystycznych pokazały, że nie istnieje istotna różnica w dochodach między osobami, które kupiły rower, a tymi, które go nie kupiły, co sugeruje, że decyzja zakupowa nie jest determinowana poziomem zarobków, lecz innymi czynnikami.
+
+Najważniejszym czynnikiem wpływającym na zakup roweru okazał się dystans do pracy – testy statystyczne wykazały istotne różnice w jego wartości między osobami, które kupiły rower, a tymi, które go nie kupiły. Wynika z tego, że osoby mieszkające bliżej miejsca pracy częściej decydują się na zakup roweru, ponieważ krótszy dystans sprzyja jego wykorzystaniu jako środka transportu. Potwierdza to również regresja logistyczna, według której osoby dojeżdżające powyżej 10 mil mają znacznie mniejsze prawdopodobieństwo zakupu roweru.
+
+Wiek również wykazał umiarkowany wpływ na decyzję zakupową. Testy statystyczne wykazały, że młodsze osoby częściej decydują się na zakup roweru, jednak model regresji logistycznej nie potwierdził jednoznacznej istotności tego czynnika. Może to oznaczać, że decyzja zakupowa wynika nie tyle z wieku, co z innych czynników związanych ze stylem życia i aktywnością fizyczną, które często współwystępują z młodszym wiekiem.
+
+Z kolei liczba posiadanych samochodów oraz liczba dzieci wykazały istotny negatywny wpływ na zakup roweru. Wynika to prawdopodobnie z faktu, że osoby posiadające więcej samochodów częściej korzystają z nich jako podstawowego środka transportu, co zmniejsza potrzebę posiadania roweru. Podobna zależność dotyczy liczby dzieci – osoby z większą liczbą dzieci mogą preferować inne środki transportu, bardziej dostosowane do przewożenia rodziny.
+
+Istotnym czynnikiem okazał się również region zamieszkania. Wyniki regresji logistycznej wykazały, że osoby mieszkające w regionie Pacyfiku częściej kupują rowery niż osoby z innych regionów. Może to wynikać z różnic w infrastrukturze rowerowej, klimacie sprzyjającym jeździe na rowerze lub preferencjach ekologicznych dominujących w tym regionie. Jednocześnie testy chi-kwadrat potwierdziły, że region zamieszkania jest istotnie powiązany z decyzją o zakupie roweru, co sugeruje, że nawyki transportowe klientów mogą być uwarunkowane lokalnymi czynnikami środowiskowymi.
+
+Podsumowując, kluczowe wnioski płynące z analizy wskazują, że decyzja o zakupie roweru wynika głównie z dystansu do pracy, który w największym stopniu wpływa na prawdopodobieństwo jego zakupu – im krótsza odległość, tym większa skłonność do zakupu. Dochód, choć początkowo wydawał się istotnym czynnikiem, nie wykazał znaczącego wpływu, co sugeruje, że decyzja zakupowa jest bardziej związana z indywidualnym stylem życia niż ze statusiem ekonomicznym. Posiadanie dzieci oraz większej liczby samochodów znacząco obniża skłonność do zakupu roweru, co może wynikać z konieczności korzystania z bardziej praktycznych środków transportu. Region zamieszkania również ma wpływ na zakup roweru, co może być związane z dostępnością infrastruktury rowerowej i lokalnymi preferencjami transportowymi.
+
+Wyniki analizy dostarczają cennych informacji, które mogą być wykorzystane w strategii marketingowej sklepu rowerowego. Ze względu na to, że decyzja zakupowa jest w dużej mierze determinowana przez dystans do pracy, warto skupić działania promocyjne na osobach mieszkających w pobliżu swoich miejsc zatrudnienia. Ponadto, osoby mieszkające w regionach o większej popularności rowerów mogą stanowić grupę docelową, do której warto skierować dedykowane kampanie marketingowe. Jednocześnie, wyniki analizy sugerują, że posiadanie dzieci oraz samochodów zmniejsza skłonność do zakupu roweru, dlatego potencjalnym rozwiązaniem mogłoby być promowanie rowerów elektrycznych lub rowerów rodzinnych jako alternatywnego środka transportu.
+
+Podsumowując, analiza pozwoliła na identyfikację kluczowych zależności i określenie głównych czynników determinujących zakup roweru. Wynika z niej, że na decyzję klientów wpływają zarówno czynniki osobiste, takie jak liczba samochodów i dzieci, jak i kontekstowe, takie jak dystans do pracy oraz region zamieszkania.
