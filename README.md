@@ -31,3 +31,5 @@ Customer survey data including:
 - Built classification model predicting purchase behavior
 - Segmented customers into meaningful groups
 
+## Authors
+Tomasz Kotliński, Piotr Łukowski
